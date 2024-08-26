@@ -1,90 +1,134 @@
 package main
 
 import (
+	"bufio"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
-	"time"
 )
 
-func main() {
-	// OAIPMH was generated 2024-08-20 15:53:27 by https://xml-to-go.github.io/ in Ukraine.
-	type OAIPMH struct {
-		XMLName        xml.Name `xml:"OAI-PMH"`
-		Text           string   `xml:",chardata"`
-		Xmlns          string   `xml:"xmlns,attr"`
-		Xsi            string   `xml:"xsi,attr"`
-		SchemaLocation string   `xml:"schemaLocation,attr"`
-		ResponseDate   string   `xml:"responseDate"`
-		Request        struct {
-			Text            string `xml:",chardata"`
-			Verb            string `xml:"verb,attr"`
-			ResumptionToken string `xml:"resumptionToken,attr"`
-		} `xml:"request"`
-		ListIdentifiers struct {
-			Text   string `xml:",chardata"`
-			Header []struct {
-				Text       string `xml:",chardata"`
-				Identifier string `xml:"identifier"`
-				Datestamp  string `xml:"datestamp"`
-				SetSpec    string `xml:"setSpec"`
-			} `xml:"header"`
-			ResumptionToken string `xml:"resumptionToken"`
-		} `xml:"ListIdentifiers"`
-	}
+func writeDipId(dipId string) {
+	dipIdByte := []byte(dipId + "\n")
 
-	baseURL := "https://exploreuk.uky.edu/"
-	f, err := os.Create("EUK_IDs")
+	runningIds, err2 := os.OpenFile("./ids/collections-complete-log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err2 != nil {
+		log.Println("Error writing dip ids to log: ", err2)
+	}
+	defer runningIds.Close()
+
+	_, err := runningIds.Write(dipIdByte)
 	if err != nil {
-		log.Fatal("Error with creating file: ", err)
-	}
-	defer f.Close()
-
-	for {
-		request, err := http.Get(fmt.Sprintf("%vcatalog/oai?verb=ListIdentifiers&resumptionToken=oai_dc.s(default).f(2018-09-25T12:48:35Z).u(2024-08-20T17:22:46Z):2", baseURL))
-
-		if err != nil {
-			log.Fatalf("Error with request: %v", err)
-			return
-		}
-		defer request.Body.Close()
-
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			fmt.Println("Error reading body:", err)
-			return
-		}
-
-		var response OAIPMH
-		error := xml.Unmarshal(body, &response)
-		if error != nil {
-			log.Fatal("Error with unmarshal: ", error)
-		}
-
-		for _, header := range response.ListIdentifiers.Header {
-			str := header.Identifier
-			cleaned := strings.Split(str, "/")
-			identifier := cleaned[1]
-			_, err := f.WriteString(identifier + "\n")
-			if err != nil {
-				log.Fatal("Error writing to file: ", err)
-			}
-		}
-
-		fmt.Println("Request header: ", request)
-		fmt.Println("Request Body: ", string(body))
-		fmt.Printf("Type: %T", body)
-
-		time.Sleep(2 * time.Second)
+		log.Println("Error writing to dip id log: ", err)
 	}
 }
 
-// TODO
-// open the ids file
-// pipe each id into base/dips/id/data/mets.xml
-// Find the items that you need to extract by finding acceptable mimetypese
-// Grab the xlink:href value and pipe it into base/dips/id/data/href
+func main() {
+	baseURL := "https://exploreuk.uky.edu"
+	mimetypeList := make(map[string]int)
+	// acceptableMimetypes := []string{"text/plain", "application/xml"}
+	// open the ids file
+	logFile, err := os.OpenFile("errLog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.SetOutput(logFile)
+	log.Println("Start log")
+
+	file, err := os.Open("ids/run-dips.txt")
+	if err != nil {
+		log.Println("Error opening file:", err)
+		return
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	for {
+		dipId, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Println("Error reading file:", err)
+			continue
+		}
+		dipId = strings.TrimSuffix(dipId, "\n")
+		fmt.Println("Collection: ", dipId)
+
+		// pipe each id into base/dips/id/data/mets.xml
+		response, err := http.Get(baseURL + "/dips/" + dipId + "/data/mets.xml")
+		if err != nil {
+			log.Println("Error with METS get request: ", err)
+			continue
+		}
+		defer response.Body.Close()
+
+		decoder := xml.NewDecoder(response.Body)
+		var currentMimetype string
+
+		for {
+			token, err := decoder.Token()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Printf("Error with xml encoding in %s: %v\n", dipId, err)
+				continue
+			}
+
+			// Find the items that you need to extract by finding acceptable mimetypes
+
+			switch t := token.(type) {
+			case xml.StartElement:
+				if t.Name.Local == "file" {
+					for _, attr := range t.Attr {
+						if attr.Name.Local == "MIMETYPE" {
+							currentMimetype = attr.Value
+							_, exists := mimetypeList[currentMimetype]
+							if exists {
+								mimetypeList[currentMimetype] += 1
+							} else {
+								mimetypeList[currentMimetype] = 1
+							}
+							fmt.Printf("Collection: %v\tRunning MimeTypes: %v\n", dipId, mimetypeList)
+							break
+						}
+					}
+				}
+				// TODO: Make a list of the mimetypes you're interested in
+				if t.Name.Local == "FLocat" && currentMimetype == "text/plain" || currentMimetype == "application/xml" {
+					for _, attr := range t.Attr {
+						if attr.Name.Local == "href" {
+							href := attr.Value
+							// fmt.Printf("href is: %v", href)
+							response, err := http.Get(baseURL + "/dips/" + dipId + "/data/" + href)
+							if err != nil {
+								log.Println("Error with resource request: ", err)
+							}
+							defer response.Body.Close()
+							fileName := dipId + "_" + filepath.Base(href)
+							file, err := os.Create("./resources/" + fileName)
+							if err != nil {
+								log.Println("Error creating file: ", err)
+							}
+							defer file.Close()
+
+							_, err = io.Copy(file, response.Body)
+							if err != nil {
+								log.Println("Error copying file: ", err)
+							}
+							// fmt.Printf("File %v successfully downloaded\n", fileName)
+							// time.Sleep(time.Millisecond * 25)
+						}
+					}
+				}
+			}
+		}
+		writeDipId(dipId)
+	}
+}

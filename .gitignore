@@ -1,2 +1,10 @@
 EUK_IDs
 all-ids.json
+/resources
+.env
+errLog.txt
+go-oai
+./ids/*
+run-dips.txt
+collections-complete-log.txt
+move.sh
