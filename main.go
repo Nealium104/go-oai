@@ -30,14 +30,13 @@ func writeDipId(dipId string) {
 func main() {
 	baseURL := "https://exploreuk.uky.edu"
 	mimetypeList := make(map[string]int)
-	// acceptableMimetypes := []string{"text/plain", "application/xml"}
-	// open the ids file
-	logFile, err := os.OpenFile("errLog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+	errorLogFile, err := os.OpenFile("errLog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.SetOutput(logFile)
+	log.SetOutput(errorLogFile)
 	log.Println("Start log")
 
 	file, err := os.Open("ids/run-dips.txt")
@@ -48,6 +47,7 @@ func main() {
 	defer file.Close()
 
 	reader := bufio.NewReader(file)
+
 	for {
 		dipId, err := reader.ReadString('\n')
 		if err != nil {
@@ -78,11 +78,10 @@ func main() {
 			}
 			if err != nil {
 				log.Printf("Error with xml encoding in %s: %v\n", dipId, err)
-				continue
+				break
 			}
 
 			// Find the items that you need to extract by finding acceptable mimetypes
-
 			switch t := token.(type) {
 			case xml.StartElement:
 				if t.Name.Local == "file" {
